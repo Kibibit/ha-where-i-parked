@@ -11,16 +11,16 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_FRIENDLY_NAME, STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
 from .const import (
-    CONF_ADDRESS_SENSORS,
     CONF_BLUETOOTH_MAC,
-    CONF_BLUETOOTH_SENSORS,
     CONF_PEOPLE,
+    CONF_PHONE_TRACKERS,
     DEFAULT_SCAN_INTERVAL_SECONDS,
     DOMAIN,
     KEY_ADDRESS,
@@ -117,8 +117,8 @@ class RememberWhereIParkedCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Return entities that can change the computed car state."""
         return {
             *self.config_entry.data.get(CONF_PEOPLE, []),
-            *self.config_entry.data.get(CONF_BLUETOOTH_SENSORS, []),
-            *self.config_entry.data.get(CONF_ADDRESS_SENSORS, []),
+            *self._phone_trackers(),
+            *self._phone_sensor_entities(),
         }
 
     @callback
@@ -195,7 +195,7 @@ class RememberWhereIParkedCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _find_connected_sensor(self) -> str | None:
         """Return the matching Bluetooth entity if the car is connected."""
         target_mac = self.config_entry.data[CONF_BLUETOOTH_MAC]
-        for entity_id in self.config_entry.data.get(CONF_BLUETOOTH_SENSORS, []):
+        for entity_id in self._phone_sensor_entities():
             state = self.hass.states.get(entity_id)
             if state is None:
                 continue
@@ -244,7 +244,7 @@ class RememberWhereIParkedCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     ) -> str | None:
         """Pick a human-readable address from configured sensors."""
         freshest = None
-        for entity_id in self.config_entry.data.get(CONF_ADDRESS_SENSORS, []):
+        for entity_id in self._address_sensor_entities():
             state = self.hass.states.get(entity_id)
             if state is None or state.state in ("", STATE_UNKNOWN, STATE_UNAVAILABLE):
                 continue
@@ -276,3 +276,54 @@ class RememberWhereIParkedCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if latitude is None or longitude is None:
             return None
         return f"{latitude:.6f}, {longitude:.6f}"
+
+    def _phone_trackers(self) -> list[str]:
+        """Return configured phone tracker entity ids."""
+        return list(self.config_entry.data.get(CONF_PHONE_TRACKERS, {}).values())
+
+    def _phone_sensor_entities(self) -> list[str]:
+        """Return sensor entities attached to configured phones."""
+        return self._device_entities_for_domains(("sensor", "binary_sensor"))
+
+    def _address_sensor_entities(self) -> list[str]:
+        """Return likely address sensors attached to configured phones."""
+        keywords = ("geocoded", "address", "street", "location")
+        entities = []
+        for entity_id in self._device_entities_for_domains(("sensor",)):
+            lowered = entity_id.lower()
+            if any(keyword in lowered for keyword in keywords):
+                entities.append(entity_id)
+                continue
+
+            state = self.hass.states.get(entity_id)
+            if state is None:
+                continue
+
+            friendly_name = str(state.attributes.get(ATTR_FRIENDLY_NAME, "")).lower()
+            if any(keyword in friendly_name for keyword in keywords):
+                entities.append(entity_id)
+
+        return entities
+
+    def _device_entities_for_domains(self, domains: tuple[str, ...]) -> list[str]:
+        """Return entities tied to the selected mobile app devices."""
+        registry = er.async_get(self.hass)
+        entity_ids: list[str] = []
+        seen: set[str] = set()
+
+        for tracker_entity_id in self._phone_trackers():
+            tracker_entry = registry.async_get(tracker_entity_id)
+            if tracker_entry is None or tracker_entry.device_id is None:
+                continue
+
+            for entry in er.async_entries_for_device(registry, tracker_entry.device_id):
+                if entry.domain not in domains:
+                    continue
+
+                if entry.entity_id in seen:
+                    continue
+
+                entity_ids.append(entry.entity_id)
+                seen.add(entry.entity_id)
+
+        return entity_ids

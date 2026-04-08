@@ -2,15 +2,15 @@
   "domain": "remember_where_i_parked",
   "name": "Remember Where I Parked",
   "codeowners": [
-    "@thatkookooguy"
+    "@Kibibit"
   ],
   "config_flow": true,
-  "documentation": "https://github.com/thatkookooguy/remember-where-i-parked",
-  "issue_tracker": "https://github.com/thatkookooguy/remember-where-i-parked/issues",
+  "documentation": "https://github.com/Kibibit/ha-where-i-parked",
+  "issue_tracker": "https://github.com/Kibibit/ha-where-i-parked/issues",
   "iot_class": "local_polling",
   "loggers": [
     "custom_components.remember_where_i_parked"
   ],
   "requirements": [],
-  "version": "0.1.0"
+  "version": "0.1.1"
 }

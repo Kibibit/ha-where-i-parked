@@ -16,18 +16,18 @@
           "people": "Drivers"
         }
       },
-      "sensors": {
-        "title": "Choose source sensors",
-        "description": "Select one or more Bluetooth sensors that expose the configured MAC address when connected. Optionally select address sensors from the companion app.",
+      "phones": {
+        "title": "Choose a phone",
+        "description": "Select the companion-app phone to use for {person_name}. If there is only one available phone, it is preselected for you.",
         "data": {
-          "bluetooth_sensors": "Bluetooth source sensors",
-          "address_sensors": "Address source sensors"
+          "phone_tracker": "Phone"
         }
       }
     },
     "error": {
       "invalid_mac": "Enter a valid Bluetooth MAC address.",
       "no_people": "Create at least one person in Home Assistant before adding a car.",
+      "no_mobile_app_trackers": "No mobile app phone trackers were found for the selected person.",
       "required": "Select at least one value."
     },
     "abort": {

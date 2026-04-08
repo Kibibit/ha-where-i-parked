@@ -20,14 +20,16 @@ Each car is configured as its own integration entry:
 
 1. enter a car name and the car Bluetooth MAC address
 2. select the Home Assistant `person` entities that can drive that car
-3. select one or more Bluetooth source entities and optional address source entities
+3. choose the companion-app phone for each selected person
 
-## Notes about source entities
+## How phone selection works
 
-Companion app Bluetooth and geocoded address entities vary by platform and phone configuration. This first version intentionally lets you choose the entities manually so you can test against your own setup without hardcoding Android- or iOS-specific assumptions.
+The integration now derives source entities from the selected companion-app phone instead of asking you to pick raw sensors directly.
 
-- Bluetooth source entities should contain the target MAC address somewhere in their state or attributes when the phone is connected to the car.
-- Address source entities are optional. If none are configured, the integration falls back to a `"lat, lon"` string.
+- If a selected person has only one likely mobile-app phone tracker, it is preselected automatically.
+- Bluetooth connection is detected by scanning sensor and binary sensor entities attached to the selected phone device for the configured MAC address.
+- Estimated address is derived from likely address or geocoded sensors attached to the selected phone device.
+- If no address-like sensor is available, the integration falls back to a `"lat, lon"` string.
 - If multiple configured people are moving at once, the integration currently uses the freshest selected `person` location as the car location while the Bluetooth MAC is connected.
 
 ## Install with HACS

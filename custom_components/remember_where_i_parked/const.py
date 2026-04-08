@@ -14,9 +14,8 @@ STORAGE_VERSION = 1
 DEFAULT_SCAN_INTERVAL_SECONDS = 30
 
 CONF_BLUETOOTH_MAC = "bluetooth_mac"
-CONF_BLUETOOTH_SENSORS = "bluetooth_sensors"
-CONF_ADDRESS_SENSORS = "address_sensors"
 CONF_PEOPLE = "people"
+CONF_PHONE_TRACKERS = "phone_trackers"
 
 ATTR_DRIVER = "driver"
 ATTR_ESTIMATED_ADDRESS = "estimated_address"
