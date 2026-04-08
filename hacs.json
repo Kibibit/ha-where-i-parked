@@ -1,0 +1,8 @@
+{
+  "name": "Remember Where I Parked",
+  "render_readme": true,
+  "domains": [
+    "remember_where_i_parked"
+  ],
+  "homeassistant": "2024.8.0"
+}

@@ -1,0 +1,63 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Add a car",
+        "description": "Create a tracked car from its Bluetooth MAC address.",
+        "data": {
+          "name": "Car name",
+          "bluetooth_mac": "Bluetooth MAC address"
+        }
+      },
+      "people": {
+        "title": "Choose drivers",
+        "description": "Select the Home Assistant people that can drive this car.",
+        "data": {
+          "people": "Drivers"
+        }
+      },
+      "sensors": {
+        "title": "Choose source sensors",
+        "description": "Select one or more Bluetooth sensors that expose the configured MAC address when connected. Optionally select address sensors from the companion app.",
+        "data": {
+          "bluetooth_sensors": "Bluetooth source sensors",
+          "address_sensors": "Address source sensors"
+        }
+      }
+    },
+    "error": {
+      "invalid_mac": "Enter a valid Bluetooth MAC address.",
+      "no_people": "Create at least one person in Home Assistant before adding a car.",
+      "required": "Select at least one value."
+    },
+    "abort": {
+      "already_configured": "This Bluetooth MAC address is already configured."
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "driving": {
+        "name": "Driving"
+      }
+    },
+    "sensor": {
+      "state": {
+        "name": "State"
+      },
+      "estimated_address": {
+        "name": "Estimated address"
+      },
+      "latitude": {
+        "name": "Latitude"
+      },
+      "longitude": {
+        "name": "Longitude"
+      }
+    },
+    "device_tracker": {
+      "location": {
+        "name": "Location"
+      }
+    }
+  }
+}
