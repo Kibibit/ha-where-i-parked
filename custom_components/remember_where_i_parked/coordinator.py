@@ -42,6 +42,10 @@ _LOGGER = logging.getLogger(__name__)
 MAC_ADDRESS_PATTERN = re.compile(
     r"(?i)(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}|[0-9a-f]{12}"
 )
+CONNECTED_DEVICE_ATTRIBUTE_NAMES = (
+    "connected_paired_devices",
+    "connected_not_paired_devices",
+)
 
 
 def normalize_mac(value: str | None) -> str | None:
@@ -193,14 +197,14 @@ class RememberWhereIParkedCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return self._build_data()
 
     def _find_connected_sensor(self) -> str | None:
-        """Return the matching Bluetooth entity if the car is connected."""
+        """Return the matching Bluetooth entity if the car is actively connected."""
         target_mac = self.config_entry.data[CONF_BLUETOOTH_MAC]
-        for entity_id in self._phone_sensor_entities():
+        for entity_id in self._bluetooth_connection_entities():
             state = self.hass.states.get(entity_id)
             if state is None:
                 continue
 
-            for text in _iter_strings({"state": state.state, "attributes": state.attributes}):
+            for text in self._connected_device_strings(state):
                 for match in MAC_ADDRESS_PATTERN.finditer(text):
                     if normalize_mac(match.group(0)) == target_mac:
                         return entity_id
@@ -285,6 +289,30 @@ class RememberWhereIParkedCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Return sensor entities attached to configured phones."""
         return self._device_entities_for_domains(("sensor", "binary_sensor"))
 
+    def _bluetooth_connection_entities(self) -> list[str]:
+        """Return entities that specifically represent active Bluetooth connections."""
+        entities: list[str] = []
+        for entity_id in self._phone_sensor_entities():
+            state = self.hass.states.get(entity_id)
+            if state is None:
+                continue
+
+            entity_id_lower = entity_id.lower()
+            friendly_name = str(state.attributes.get(ATTR_FRIENDLY_NAME, "")).lower()
+
+            if "bluetooth_connection" in entity_id_lower:
+                entities.append(entity_id)
+                continue
+
+            if "bluetooth connection" in friendly_name:
+                entities.append(entity_id)
+                continue
+
+            if any(attribute_name in state.attributes for attribute_name in CONNECTED_DEVICE_ATTRIBUTE_NAMES):
+                entities.append(entity_id)
+
+        return entities
+
     def _address_sensor_entities(self) -> list[str]:
         """Return likely address sensors attached to configured phones."""
         keywords = ("geocoded", "address", "street", "location")
@@ -327,3 +355,8 @@ class RememberWhereIParkedCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 seen.add(entry.entity_id)
 
         return entity_ids
+
+    def _connected_device_strings(self, state) -> Iterable[str]:
+        """Yield only active Bluetooth connection data from a state."""
+        for attribute_name in CONNECTED_DEVICE_ATTRIBUTE_NAMES:
+            yield from _iter_strings(state.attributes.get(attribute_name))
