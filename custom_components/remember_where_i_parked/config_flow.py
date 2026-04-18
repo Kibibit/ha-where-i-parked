@@ -12,7 +12,20 @@ from homeassistant.core import State
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
 
-from .const import CONF_BLUETOOTH_MAC, CONF_PEOPLE, CONF_PHONE_TRACKERS, DOMAIN
+from .const import (
+    CONF_BLUETOOTH_MAC,
+    CONF_ENABLE_HIGH_ACCURACY_MODE,
+    CONF_HIGH_ACCURACY_MODE_POLICY,
+    CONF_HIGH_ACCURACY_UPDATE_INTERVAL,
+    CONF_PEOPLE,
+    CONF_PHONE_TRACKERS,
+    DEFAULT_ENABLE_HIGH_ACCURACY_MODE,
+    DEFAULT_HIGH_ACCURACY_MODE_POLICY,
+    DEFAULT_HIGH_ACCURACY_UPDATE_INTERVAL,
+    DOMAIN,
+    HIGH_ACCURACY_MODE_POLICY_ALWAYS,
+    HIGH_ACCURACY_MODE_POLICY_CHARGING_ONLY,
+)
 from .coordinator import normalize_mac
 
 
@@ -100,6 +113,39 @@ def _phone_schema(options: dict[str, str], default: str | None) -> vol.Schema:
     return vol.Schema({vol.Required("phone_tracker"): vol.In(options)})
 
 
+def _high_accuracy_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
+    """Build the high accuracy onboarding form."""
+    data = defaults or {}
+    return vol.Schema(
+        {
+            vol.Required(
+                CONF_ENABLE_HIGH_ACCURACY_MODE,
+                default=data.get(
+                    CONF_ENABLE_HIGH_ACCURACY_MODE, DEFAULT_ENABLE_HIGH_ACCURACY_MODE
+                ),
+            ): bool,
+            vol.Required(
+                CONF_HIGH_ACCURACY_MODE_POLICY,
+                default=data.get(
+                    CONF_HIGH_ACCURACY_MODE_POLICY, DEFAULT_HIGH_ACCURACY_MODE_POLICY
+                ),
+            ): vol.In(
+                {
+                    HIGH_ACCURACY_MODE_POLICY_ALWAYS: "Always while driving",
+                    HIGH_ACCURACY_MODE_POLICY_CHARGING_ONLY: "Only while driving and charging",
+                }
+            ),
+            vol.Required(
+                CONF_HIGH_ACCURACY_UPDATE_INTERVAL,
+                default=data.get(
+                    CONF_HIGH_ACCURACY_UPDATE_INTERVAL,
+                    DEFAULT_HIGH_ACCURACY_UPDATE_INTERVAL,
+                ),
+            ): vol.All(vol.Coerce(int), vol.Range(min=1)),
+        }
+    )
+
+
 class RememberWhereIParkedConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Remember Where I Parked."""
 
@@ -172,10 +218,7 @@ class RememberWhereIParkedConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         if not self._remaining_people:
             self._data[CONF_PHONE_TRACKERS] = self._selected_phone_trackers
-            return self.async_create_entry(
-                title=self._data["name"],
-                data=self._data,
-            )
+            return await self.async_step_high_accuracy()
 
         person_entity_id = self._remaining_people[0]
         person_state = self.hass.states.get(person_entity_id)
@@ -207,4 +250,30 @@ class RememberWhereIParkedConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=_phone_schema(options, default),
             errors=errors,
             description_placeholders={"person_name": person_name},
+        )
+
+    async def async_step_high_accuracy(self, user_input: dict[str, Any] | None = None):
+        """Collect per-car high accuracy mode settings."""
+        if user_input is not None:
+            self._data.update(
+                {
+                    CONF_ENABLE_HIGH_ACCURACY_MODE: user_input[
+                        CONF_ENABLE_HIGH_ACCURACY_MODE
+                    ],
+                    CONF_HIGH_ACCURACY_MODE_POLICY: user_input[
+                        CONF_HIGH_ACCURACY_MODE_POLICY
+                    ],
+                    CONF_HIGH_ACCURACY_UPDATE_INTERVAL: user_input[
+                        CONF_HIGH_ACCURACY_UPDATE_INTERVAL
+                    ],
+                }
+            )
+            return self.async_create_entry(
+                title=self._data["name"],
+                data=self._data,
+            )
+
+        return self.async_show_form(
+            step_id="high_accuracy",
+            data_schema=_high_accuracy_schema(self._data),
         )
