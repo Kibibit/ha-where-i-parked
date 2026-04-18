@@ -1,13 +1,30 @@
-# Remember Where I Parked
+<p align="center">
+  <a href="https://github.com/Kibibit/ha-where-i-parked" target="blank">
+    <img src="logo.png" width="150">
+  </a>
+  <h2 align="center">Remember Where I Parked</h2>
+</p>
+<p align="center">
+  <a href="https://github.com/custom-components/hacs">
+    <img src="https://img.shields.io/badge/HACS-Custom-orange.svg?style=for-the-badge">
+  </a>
+  <a href="https://github.com/Kibibit/ha-where-i-parked">
+    <img src="https://img.shields.io/badge/version-0.1.1-blue.svg?style=for-the-badge">
+  </a>
+</p>
+<p align="center">
+  <a href="https://my.home-assistant.io/redirect/hacs_repository/?owner=Kibibit&repository=ha-where-i-parked&category=integration">
+    <img src="https://my.home-assistant.io/badges/hacs_repository.svg">
+  </a>
+</p>
+<p align="center">
+  A Home Assistant custom integration that remembers where you parked by following the selected driver's phone while the car Bluetooth device is connected.
+</p>
+<hr>
 
 `Remember Where I Parked` is a Home Assistant custom integration inspired by this community idea: [Remember where I parked in home assistant](https://community.home-assistant.io/t/remember-where-i-parked-in-home-assistant/200698/54).
 
 It is designed to be installed through HACS as a custom integration, not as a Home Assistant add-on.
-
-[![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/custom-components/hacs)
-[![Version](https://img.shields.io/badge/version-0.1.1-blue.svg)](https://github.com/Kibibit/ha-where-i-parked)
-
-[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Kibibit&repository=ha-where-i-parked&category=integration)
 
 ## What it does
 
