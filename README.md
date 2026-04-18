@@ -4,6 +4,11 @@
 
 It is designed to be installed through HACS as a custom integration, not as a Home Assistant add-on.
 
+[![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/custom-components/hacs)
+[![Version](https://img.shields.io/badge/version-0.1.1-blue.svg)](https://github.com/Kibibit/ha-where-i-parked)
+
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Kibibit&repository=ha-where-i-parked&category=integration)
+
 ## What it does
 
 For each configured car, the integration creates a device with:
@@ -33,6 +38,8 @@ The integration now derives source entities from the selected companion-app phon
 - If multiple configured people are moving at once, the integration currently uses the freshest selected `person` location as the car location while the Bluetooth MAC is connected.
 
 ## Install with HACS
+
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Kibibit&repository=ha-where-i-parked&category=integration)
 
 1. Push this repository to GitHub.
 2. In HACS, add it as a custom repository of type `Integration`.
