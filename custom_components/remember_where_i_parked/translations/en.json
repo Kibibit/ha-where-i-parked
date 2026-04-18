@@ -22,6 +22,15 @@
         "data": {
           "phone_tracker": "Phone"
         }
+      },
+      "high_accuracy": {
+        "title": "High Accuracy Mode",
+        "description": "Android Companion High Accuracy Mode can improve live tracking while driving, but it uses more battery. Choose \"Always while driving\" for the most frequent updates, or \"Only while driving and charging\" to reduce battery drain.",
+        "data": {
+          "enable_high_accuracy_mode": "Enable High Accuracy Mode",
+          "high_accuracy_mode_policy": "Activation policy",
+          "high_accuracy_update_interval": "High accuracy update interval in seconds (lower values use more battery)"
+        }
       }
     },
     "error": {

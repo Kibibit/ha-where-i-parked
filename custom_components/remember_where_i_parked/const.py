@@ -12,10 +12,16 @@ PLATFORMS: tuple[Platform, ...] = (
 
 STORAGE_VERSION = 1
 DEFAULT_SCAN_INTERVAL_SECONDS = 30
+DEFAULT_HIGH_ACCURACY_UPDATE_INTERVAL = 15
+DEFAULT_ENABLE_HIGH_ACCURACY_MODE = True
+DEFAULT_HIGH_ACCURACY_MODE_POLICY = "charging_only"
 
 CONF_BLUETOOTH_MAC = "bluetooth_mac"
 CONF_PEOPLE = "people"
 CONF_PHONE_TRACKERS = "phone_trackers"
+CONF_ENABLE_HIGH_ACCURACY_MODE = "enable_high_accuracy_mode"
+CONF_HIGH_ACCURACY_UPDATE_INTERVAL = "high_accuracy_update_interval"
+CONF_HIGH_ACCURACY_MODE_POLICY = "high_accuracy_mode_policy"
 
 ATTR_DRIVER = "driver"
 ATTR_ESTIMATED_ADDRESS = "estimated_address"
@@ -35,3 +41,6 @@ KEY_MATCHED_BLUETOOTH_SENSOR = "matched_bluetooth_sensor"
 
 STATUS_DRIVING = "driving"
 STATUS_PARKED = "parked"
+
+HIGH_ACCURACY_MODE_POLICY_ALWAYS = "always"
+HIGH_ACCURACY_MODE_POLICY_CHARGING_ONLY = "charging_only"

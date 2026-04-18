@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import timedelta
 import logging
 import re
@@ -19,10 +21,18 @@ from homeassistant.util import dt as dt_util
 
 from .const import (
     CONF_BLUETOOTH_MAC,
+    CONF_ENABLE_HIGH_ACCURACY_MODE,
+    CONF_HIGH_ACCURACY_MODE_POLICY,
+    CONF_HIGH_ACCURACY_UPDATE_INTERVAL,
     CONF_PEOPLE,
     CONF_PHONE_TRACKERS,
+    DEFAULT_ENABLE_HIGH_ACCURACY_MODE,
+    DEFAULT_HIGH_ACCURACY_MODE_POLICY,
+    DEFAULT_HIGH_ACCURACY_UPDATE_INTERVAL,
     DEFAULT_SCAN_INTERVAL_SECONDS,
     DOMAIN,
+    HIGH_ACCURACY_MODE_POLICY_ALWAYS,
+    HIGH_ACCURACY_MODE_POLICY_CHARGING_ONLY,
     KEY_ADDRESS,
     KEY_DRIVER,
     KEY_DRIVING,
@@ -46,6 +56,45 @@ CONNECTED_DEVICE_ATTRIBUTE_NAMES = (
     "connected_paired_devices",
     "connected_not_paired_devices",
 )
+CHARGING_BINARY_SENSOR_KEYWORDS = ("is_charging", "_charging", "plugged")
+CHARGING_SENSOR_KEYWORDS = ("battery_state", "charger_type", "power_state", "charging")
+MOBILE_APP_ENTITY_SUFFIXES = (
+    "_battery_level",
+    "_battery_state",
+    "_charger_type",
+    "_geocoded_location",
+    "_high_accuracy_mode",
+    "_high_accuracy_update_interval",
+    "_is_charging",
+)
+CHARGING_ACTIVE_STATES = {
+    "charging",
+    "full",
+    "plugged",
+    "plugged_in",
+    "ac",
+    "usb",
+    "wireless",
+}
+CHARGING_INACTIVE_STATES = {
+    "not_charging",
+    "not charging",
+    "discharging",
+    "unplugged",
+    "none",
+    "off",
+}
+
+
+@dataclass(slots=True)
+class ActiveDriverDevice:
+    """Configured driver device details used for high accuracy commands."""
+
+    person_entity_id: str
+    tracker_entity_id: str
+    device_id: str
+    notify_service: str | None
+    charging_entity_id: str | None
 
 
 def normalize_mac(value: str | None) -> str | None:
@@ -99,6 +148,10 @@ class RememberWhereIParkedCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._store = Store[dict[str, Any]](hass, STORAGE_VERSION, f"{DOMAIN}_{entry.entry_id}")
         self._parked_snapshot: dict[str, Any] = {}
         self._remove_listener = None
+        self._high_accuracy_lock = asyncio.Lock()
+        self._high_accuracy_enabled = False
+        self._high_accuracy_controlled_device: ActiveDriverDevice | None = None
+        self._last_high_accuracy_reason: tuple[str | None, str | None] | None = None
 
     async def async_initialize(self) -> None:
         """Load persisted parked state and start listening for updates."""
@@ -115,6 +168,7 @@ class RememberWhereIParkedCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self._remove_listener is not None:
             self._remove_listener()
             self._remove_listener = None
+        await self._async_disable_high_accuracy_mode()
 
     @callback
     def _watched_entities(self) -> set[str]:
@@ -128,7 +182,9 @@ class RememberWhereIParkedCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     @callback
     def _handle_state_change(self, event: Event) -> None:
         """Refresh quickly when any relevant state changes."""
-        self.async_set_updated_data(self._build_data())
+        updated_data = self._build_data()
+        self.async_set_updated_data(updated_data)
+        self.hass.async_create_task(self._async_sync_high_accuracy_mode(updated_data))
 
     def _build_data(self) -> dict[str, Any]:
         """Build current car state from configured entities."""
@@ -194,7 +250,321 @@ class RememberWhereIParkedCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Update the tracked car state."""
-        return self._build_data()
+        data = self._build_data()
+        await self._async_sync_high_accuracy_mode(data)
+        return data
+
+    async def _async_sync_high_accuracy_mode(self, data: dict[str, Any]) -> None:
+        """Keep Android high accuracy mode aligned with the current driving state."""
+        if not self.config_entry.data.get(
+            CONF_ENABLE_HIGH_ACCURACY_MODE, DEFAULT_ENABLE_HIGH_ACCURACY_MODE
+        ):
+            await self._async_disable_high_accuracy_mode()
+            self._last_high_accuracy_reason = None
+            return
+
+        async with self._high_accuracy_lock:
+            if not data.get(KEY_DRIVING):
+                await self._async_disable_high_accuracy_mode()
+                self._last_high_accuracy_reason = None
+                return
+
+            active_device = self._resolve_active_configured_driver_device()
+            should_enable, reason = self._evaluate_high_accuracy_mode_state(active_device)
+            reason_key = (
+                reason,
+                active_device.tracker_entity_id if active_device is not None else None,
+            )
+
+            if reason_key != self._last_high_accuracy_reason:
+                self._log_high_accuracy_skip_reason(reason, active_device)
+                self._last_high_accuracy_reason = reason_key
+
+            if self._high_accuracy_enabled and (
+                active_device is None
+                or self._high_accuracy_controlled_device is None
+                or active_device.device_id != self._high_accuracy_controlled_device.device_id
+            ):
+                await self._async_disable_high_accuracy_mode()
+                if self._high_accuracy_enabled:
+                    return
+
+            if should_enable and active_device is not None:
+                await self._async_enable_high_accuracy_mode(active_device)
+                return
+
+            await self._async_disable_high_accuracy_mode()
+
+    def _resolve_active_configured_driver_device(self) -> ActiveDriverDevice | None:
+        """Resolve the active configured driver device for this car entry."""
+        person_state = self._select_person_state()
+        if person_state is None:
+            return None
+
+        tracker_entity_id = self.config_entry.data.get(CONF_PHONE_TRACKERS, {}).get(
+            person_state.entity_id
+        )
+        if tracker_entity_id is None:
+            return None
+
+        registry = er.async_get(self.hass)
+        tracker_entry = registry.async_get(tracker_entity_id)
+        if tracker_entry is None or tracker_entry.device_id is None:
+            return None
+
+        return ActiveDriverDevice(
+            person_entity_id=person_state.entity_id,
+            tracker_entity_id=tracker_entity_id,
+            device_id=tracker_entry.device_id,
+            notify_service=self._mobile_app_notify_service(tracker_entity_id, tracker_entry.device_id),
+            charging_entity_id=self._charging_state_entity(tracker_entry.device_id),
+        )
+
+    def _evaluate_high_accuracy_mode_state(
+        self, active_device: ActiveDriverDevice | None
+    ) -> tuple[bool, str | None]:
+        """Return whether high accuracy mode should currently be enabled."""
+        if active_device is None or active_device.notify_service is None:
+            return (False, "no_controllable_active_device")
+
+        if self._high_accuracy_mode_policy() == HIGH_ACCURACY_MODE_POLICY_ALWAYS:
+            return (True, None)
+
+        if active_device.charging_entity_id is None:
+            return (False, "charging_state_unavailable")
+
+        charging = self._charging_state(active_device.charging_entity_id)
+        if charging is True:
+            return (True, None)
+        if charging is False:
+            return (False, "not_charging")
+        return (False, "charging_state_unavailable")
+
+    async def _async_enable_high_accuracy_mode(self, active_device: ActiveDriverDevice) -> None:
+        """Enable high accuracy mode for the active device if needed."""
+        if (
+            self._high_accuracy_enabled
+            and self._high_accuracy_controlled_device is not None
+            and self._high_accuracy_controlled_device.device_id == active_device.device_id
+        ):
+            return
+
+        interval_set = await self._async_send_high_accuracy_mode_command(
+            active_device,
+            "high_accuracy_set_update_interval",
+            {
+                "high_accuracy_update_interval": self.config_entry.data.get(
+                    CONF_HIGH_ACCURACY_UPDATE_INTERVAL,
+                    DEFAULT_HIGH_ACCURACY_UPDATE_INTERVAL,
+                )
+            },
+        )
+        if not interval_set:
+            return
+
+        sent = await self._async_send_high_accuracy_mode_command(active_device, "turn_on")
+        if not sent:
+            return
+
+        self._high_accuracy_enabled = True
+        self._high_accuracy_controlled_device = active_device
+        _LOGGER.info(
+            "Enabled High Accuracy Mode for car entry %s on device %s (%s) using policy %s",
+            self.config_entry.entry_id,
+            active_device.device_id,
+            active_device.tracker_entity_id,
+            self._high_accuracy_mode_policy(),
+        )
+
+    async def _async_disable_high_accuracy_mode(self) -> None:
+        """Disable high accuracy mode for the currently controlled device if needed."""
+        if not self._high_accuracy_enabled or self._high_accuracy_controlled_device is None:
+            self._high_accuracy_controlled_device = None
+            return
+
+        active_device = self._high_accuracy_controlled_device
+        sent = await self._async_send_high_accuracy_mode_command(active_device, "turn_off")
+        if not sent:
+            return
+
+        self._high_accuracy_enabled = False
+        self._high_accuracy_controlled_device = None
+        _LOGGER.info(
+            "Disabled High Accuracy Mode for car entry %s on device %s (%s) using policy %s",
+            self.config_entry.entry_id,
+            active_device.device_id,
+            active_device.tracker_entity_id,
+            self._high_accuracy_mode_policy(),
+        )
+
+    async def _async_send_high_accuracy_mode_command(
+        self,
+        active_device: ActiveDriverDevice,
+        command: str,
+        extra_data: dict[str, Any] | None = None,
+    ) -> bool:
+        """Send the Android companion command for high accuracy mode."""
+        if active_device.notify_service is None:
+            return False
+
+        service_data: dict[str, Any] = {
+            "message": "command_high_accuracy_mode",
+            "data": {
+                "command": command,
+            },
+        }
+        if extra_data:
+            service_data["data"].update(extra_data)
+
+        try:
+            await self.hass.services.async_call(
+                "notify",
+                active_device.notify_service,
+                service_data,
+                blocking=True,
+            )
+        except Exception:  # noqa: BLE001
+            _LOGGER.warning(
+                "Failed to send High Accuracy Mode command %s for car entry %s to device %s (%s)",
+                command,
+                self.config_entry.entry_id,
+                active_device.device_id,
+                active_device.tracker_entity_id,
+                exc_info=True,
+            )
+            return False
+
+        return True
+
+    def _mobile_app_notify_service(self, tracker_entity_id: str, device_id: str) -> str | None:
+        """Resolve the notify.mobile_app service for a configured tracker device."""
+        services = self.hass.services.async_services().get("notify", {})
+        if not services:
+            return None
+
+        candidate_names = [
+            f"mobile_app_{candidate}"
+            for candidate in self._mobile_app_device_ids(tracker_entity_id, device_id)
+        ]
+
+        for service_name in candidate_names:
+            if service_name in services:
+                return service_name
+
+        return None
+
+    def _mobile_app_device_ids(self, tracker_entity_id: str, device_id: str) -> list[str]:
+        """Return likely Companion device ids derived from the configured mobile app entities."""
+        registry = er.async_get(self.hass)
+        candidate_ids: list[str] = [tracker_entity_id.split(".", 1)[1]]
+        seen: set[str] = set(candidate_ids)
+
+        for entry in er.async_entries_for_device(registry, device_id):
+            object_id = entry.entity_id.split(".", 1)[1]
+            for suffix in MOBILE_APP_ENTITY_SUFFIXES:
+                if not object_id.endswith(suffix):
+                    continue
+
+                candidate = object_id[: -len(suffix)]
+                if candidate and candidate not in seen:
+                    candidate_ids.append(candidate)
+                    seen.add(candidate)
+
+        return candidate_ids
+
+    def _charging_state_entity(self, device_id: str) -> str | None:
+        """Resolve the best charging or power-state entity for a configured device."""
+        registry = er.async_get(self.hass)
+        binary_candidates: list[str] = []
+        sensor_candidates: list[str] = []
+
+        for entry in er.async_entries_for_device(registry, device_id):
+            entity_id_lower = entry.entity_id.lower()
+            state = self.hass.states.get(entry.entity_id)
+            friendly_name = (
+                str(state.attributes.get(ATTR_FRIENDLY_NAME, "")).lower()
+                if state is not None
+                else ""
+            )
+
+            if entry.domain == "binary_sensor" and any(
+                keyword in entity_id_lower or keyword.replace("_", " ") in friendly_name
+                for keyword in CHARGING_BINARY_SENSOR_KEYWORDS
+            ):
+                binary_candidates.append(entry.entity_id)
+                continue
+
+            if entry.domain == "sensor" and any(
+                keyword in entity_id_lower or keyword.replace("_", " ") in friendly_name
+                for keyword in CHARGING_SENSOR_KEYWORDS
+            ):
+                sensor_candidates.append(entry.entity_id)
+
+        if binary_candidates:
+            return sorted(binary_candidates)[0]
+        if sensor_candidates:
+            return sorted(sensor_candidates)[0]
+        return None
+
+    def _charging_state(self, entity_id: str) -> bool | None:
+        """Return whether the selected charging entity confirms external power."""
+        state = self.hass.states.get(entity_id)
+        if state is None or state.state in (STATE_UNKNOWN, STATE_UNAVAILABLE, ""):
+            return None
+
+        normalized_state = str(state.state).strip().lower()
+        if entity_id.startswith("binary_sensor."):
+            if normalized_state == "on":
+                return True
+            if normalized_state == "off":
+                return False
+
+        if normalized_state in CHARGING_ACTIVE_STATES:
+            return True
+        if normalized_state in CHARGING_INACTIVE_STATES:
+            return False
+        return None
+
+    def _high_accuracy_mode_policy(self) -> str:
+        """Return the configured high accuracy mode policy."""
+        return self.config_entry.data.get(
+            CONF_HIGH_ACCURACY_MODE_POLICY,
+            DEFAULT_HIGH_ACCURACY_MODE_POLICY,
+        )
+
+    def _log_high_accuracy_skip_reason(
+        self, reason: str | None, active_device: ActiveDriverDevice | None
+    ) -> None:
+        """Log why high accuracy mode was not activated, when relevant."""
+        if reason is None:
+            return
+
+        if reason == "no_controllable_active_device":
+            _LOGGER.warning(
+                "No controllable active mobile app device could be resolved for car entry %s from active device %s",
+                self.config_entry.entry_id,
+                active_device.device_id if active_device is not None else "unknown",
+            )
+            return
+
+        if reason == "not_charging":
+            _LOGGER.info(
+                "High Accuracy Mode not enabled for car entry %s on device %s (%s) because policy %s requires charging",
+                self.config_entry.entry_id,
+                active_device.device_id if active_device is not None else "unknown",
+                active_device.tracker_entity_id if active_device is not None else "unknown",
+                self._high_accuracy_mode_policy(),
+            )
+            return
+
+        if reason == "charging_state_unavailable":
+            _LOGGER.warning(
+                "High Accuracy Mode not enabled for car entry %s on device %s (%s) because charging state is unavailable for policy %s",
+                self.config_entry.entry_id,
+                active_device.device_id if active_device is not None else "unknown",
+                active_device.tracker_entity_id if active_device is not None else "unknown",
+                self._high_accuracy_mode_policy(),
+            )
 
     def _find_connected_sensor(self) -> str | None:
         """Return the matching Bluetooth entity if the car is actively connected."""
