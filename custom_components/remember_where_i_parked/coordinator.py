@@ -13,11 +13,11 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_FRIENDLY_NAME, STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import Event, HomeAssistant, callback
-from homeassistant.helpers import device_registry as dr, entity_registry as er
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
-from homeassistant.util import dt as dt_util, slugify
+from homeassistant.util import dt as dt_util
 
 from .const import (
     CONF_BLUETOOTH_MAC,
@@ -58,6 +58,15 @@ CONNECTED_DEVICE_ATTRIBUTE_NAMES = (
 )
 CHARGING_BINARY_SENSOR_KEYWORDS = ("is_charging", "_charging", "plugged")
 CHARGING_SENSOR_KEYWORDS = ("battery_state", "charger_type", "power_state", "charging")
+MOBILE_APP_ENTITY_SUFFIXES = (
+    "_battery_level",
+    "_battery_state",
+    "_charger_type",
+    "_geocoded_location",
+    "_high_accuracy_mode",
+    "_high_accuracy_update_interval",
+    "_is_charging",
+)
 CHARGING_ACTIVE_STATES = {
     "charging",
     "full",
@@ -340,7 +349,20 @@ class RememberWhereIParkedCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         ):
             return
 
-        sent = await self._async_send_high_accuracy_mode_command(active_device, turn_on=True)
+        interval_set = await self._async_send_high_accuracy_mode_command(
+            active_device,
+            "high_accuracy_set_update_interval",
+            {
+                "high_accuracy_update_interval": self.config_entry.data.get(
+                    CONF_HIGH_ACCURACY_UPDATE_INTERVAL,
+                    DEFAULT_HIGH_ACCURACY_UPDATE_INTERVAL,
+                )
+            },
+        )
+        if not interval_set:
+            return
+
+        sent = await self._async_send_high_accuracy_mode_command(active_device, "turn_on")
         if not sent:
             return
 
@@ -361,7 +383,7 @@ class RememberWhereIParkedCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
 
         active_device = self._high_accuracy_controlled_device
-        sent = await self._async_send_high_accuracy_mode_command(active_device, turn_on=False)
+        sent = await self._async_send_high_accuracy_mode_command(active_device, "turn_off")
         if not sent:
             return
 
@@ -376,7 +398,10 @@ class RememberWhereIParkedCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
 
     async def _async_send_high_accuracy_mode_command(
-        self, active_device: ActiveDriverDevice, *, turn_on: bool
+        self,
+        active_device: ActiveDriverDevice,
+        command: str,
+        extra_data: dict[str, Any] | None = None,
     ) -> bool:
         """Send the Android companion command for high accuracy mode."""
         if active_device.notify_service is None:
@@ -385,16 +410,11 @@ class RememberWhereIParkedCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         service_data: dict[str, Any] = {
             "message": "command_high_accuracy_mode",
             "data": {
-                "command": "turn_on" if turn_on else "turn_off",
+                "command": command,
             },
         }
-        if turn_on:
-            service_data["data"]["high_accuracy_update_interval"] = (
-                self.config_entry.data.get(
-                    CONF_HIGH_ACCURACY_UPDATE_INTERVAL,
-                    DEFAULT_HIGH_ACCURACY_UPDATE_INTERVAL,
-                )
-            )
+        if extra_data:
+            service_data["data"].update(extra_data)
 
         try:
             await self.hass.services.async_call(
@@ -405,7 +425,8 @@ class RememberWhereIParkedCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         except Exception:  # noqa: BLE001
             _LOGGER.warning(
-                "Failed to send High Accuracy Mode command for car entry %s to device %s (%s)",
+                "Failed to send High Accuracy Mode command %s for car entry %s to device %s (%s)",
+                command,
                 self.config_entry.entry_id,
                 active_device.device_id,
                 active_device.tracker_entity_id,
@@ -421,21 +442,35 @@ class RememberWhereIParkedCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not services:
             return None
 
-        device_registry = dr.async_get(self.hass)
-        device = device_registry.async_get(device_id)
-        candidate_names = {
-            f"mobile_app_{tracker_entity_id.split('.', 1)[1]}",
-        }
-        if device is not None:
-            for name in (device.name_by_user, device.name):
-                if name:
-                    candidate_names.add(f"mobile_app_{slugify(name)}")
+        candidate_names = [
+            f"mobile_app_{candidate}"
+            for candidate in self._mobile_app_device_ids(tracker_entity_id, device_id)
+        ]
 
         for service_name in candidate_names:
             if service_name in services:
                 return service_name
 
         return None
+
+    def _mobile_app_device_ids(self, tracker_entity_id: str, device_id: str) -> list[str]:
+        """Return likely Companion device ids derived from the configured mobile app entities."""
+        registry = er.async_get(self.hass)
+        candidate_ids: list[str] = [tracker_entity_id.split(".", 1)[1]]
+        seen: set[str] = set(candidate_ids)
+
+        for entry in er.async_entries_for_device(registry, device_id):
+            object_id = entry.entity_id.split(".", 1)[1]
+            for suffix in MOBILE_APP_ENTITY_SUFFIXES:
+                if not object_id.endswith(suffix):
+                    continue
+
+                candidate = object_id[: -len(suffix)]
+                if candidate and candidate not in seen:
+                    candidate_ids.append(candidate)
+                    seen.add(candidate)
+
+        return candidate_ids
 
     def _charging_state_entity(self, device_id: str) -> str | None:
         """Resolve the best charging or power-state entity for a configured device."""
