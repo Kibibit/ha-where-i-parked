@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 import logging
+import math
 import re
 from typing import Any
 
@@ -29,6 +30,8 @@ from .const import (
     DEFAULT_ENABLE_HIGH_ACCURACY_MODE,
     DEFAULT_HIGH_ACCURACY_MODE_POLICY,
     DEFAULT_HIGH_ACCURACY_UPDATE_INTERVAL,
+    DEFAULT_MAX_PLAUSIBLE_SPEED_KMH,
+    DEFAULT_MAX_SINGLE_JUMP_KM,
     DEFAULT_SCAN_INTERVAL_SECONDS,
     DOMAIN,
     HIGH_ACCURACY_MODE_POLICY_ALWAYS,
@@ -42,6 +45,7 @@ from .const import (
     KEY_PARKED_AT,
     KEY_SOURCE_PERSON,
     KEY_STATUS,
+    MIN_TRUSTED_LOCATION_ELAPSED_SECONDS,
     STATUS_DRIVING,
     STATUS_PARKED,
     STORAGE_VERSION,
@@ -97,6 +101,26 @@ class ActiveDriverDevice:
     charging_entity_id: str | None
 
 
+@dataclass(slots=True)
+class AcceptedLiveLocation:
+    """Most recent accepted live point used as the plausibility baseline."""
+
+    latitude: float
+    longitude: float
+    updated_at: datetime | None
+    address: str | None
+
+
+@dataclass(slots=True)
+class LocationPlausibility:
+    """Result of evaluating a candidate live point against the last accepted point."""
+
+    accepted: bool
+    distance_km: float
+    elapsed_seconds: float | None
+    implied_speed_kmh: float | None
+
+
 def normalize_mac(value: str | None) -> str | None:
     """Normalize a Bluetooth MAC address to uppercase colon-separated form."""
     if not value:
@@ -131,6 +155,89 @@ def _iter_strings(value: Any) -> Iterable[str]:
         return
 
 
+def haversine_distance_km(
+    start_latitude: float,
+    start_longitude: float,
+    end_latitude: float,
+    end_longitude: float,
+) -> float:
+    """Return the great-circle distance between two coordinates in kilometers."""
+    earth_radius_km = 6371.0
+    start_latitude_radians = math.radians(start_latitude)
+    end_latitude_radians = math.radians(end_latitude)
+    latitude_delta = math.radians(end_latitude - start_latitude)
+    longitude_delta = math.radians(end_longitude - start_longitude)
+
+    haversine = (
+        math.sin(latitude_delta / 2) ** 2
+        + math.cos(start_latitude_radians)
+        * math.cos(end_latitude_radians)
+        * math.sin(longitude_delta / 2) ** 2
+    )
+    haversine = min(1.0, max(0.0, haversine))
+    arc = 2 * math.atan2(math.sqrt(haversine), math.sqrt(1 - haversine))
+    return earth_radius_km * arc
+
+
+def is_plausible_location(
+    previous_point: AcceptedLiveLocation | None,
+    candidate_latitude: float,
+    candidate_longitude: float,
+    candidate_updated_at: datetime | None,
+    *,
+    max_speed_kmh: float = DEFAULT_MAX_PLAUSIBLE_SPEED_KMH,
+    max_single_jump_km: float = DEFAULT_MAX_SINGLE_JUMP_KM,
+    min_elapsed_seconds: float = MIN_TRUSTED_LOCATION_ELAPSED_SECONDS,
+) -> LocationPlausibility:
+    """Return whether a candidate point is plausible relative to the last accepted one."""
+    if previous_point is None:
+        return LocationPlausibility(
+            accepted=True,
+            distance_km=0.0,
+            elapsed_seconds=None,
+            implied_speed_kmh=None,
+        )
+
+    distance_km = haversine_distance_km(
+        previous_point.latitude,
+        previous_point.longitude,
+        candidate_latitude,
+        candidate_longitude,
+    )
+    if distance_km > max_single_jump_km:
+        return LocationPlausibility(
+            accepted=False,
+            distance_km=distance_km,
+            elapsed_seconds=None,
+            implied_speed_kmh=None,
+        )
+
+    if previous_point.updated_at is None or candidate_updated_at is None:
+        return LocationPlausibility(
+            accepted=True,
+            distance_km=distance_km,
+            elapsed_seconds=None,
+            implied_speed_kmh=None,
+        )
+
+    elapsed_seconds = (candidate_updated_at - previous_point.updated_at).total_seconds()
+    if elapsed_seconds < min_elapsed_seconds:
+        return LocationPlausibility(
+            accepted=True,
+            distance_km=distance_km,
+            elapsed_seconds=elapsed_seconds,
+            implied_speed_kmh=None,
+        )
+
+    implied_speed_kmh = distance_km / (elapsed_seconds / 3600)
+    return LocationPlausibility(
+        accepted=implied_speed_kmh <= max_speed_kmh,
+        distance_km=distance_km,
+        elapsed_seconds=elapsed_seconds,
+        implied_speed_kmh=implied_speed_kmh,
+    )
+
+
 class RememberWhereIParkedCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Keep car state in sync from Home Assistant entities."""
 
@@ -152,6 +259,7 @@ class RememberWhereIParkedCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._high_accuracy_enabled = False
         self._high_accuracy_controlled_device: ActiveDriverDevice | None = None
         self._last_high_accuracy_reason: tuple[str | None, str | None] | None = None
+        self._last_accepted_live_location: AcceptedLiveLocation | None = None
 
     async def async_initialize(self) -> None:
         """Load persisted parked state and start listening for updates."""
@@ -192,8 +300,13 @@ class RememberWhereIParkedCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         connected = matched_sensor is not None
         person_state = self._select_person_state()
 
-        latitude, longitude = self._coordinates_from_state(person_state)
-        estimated_address = self._select_address(latitude, longitude)
+        raw_latitude, raw_longitude = self._coordinates_from_state(person_state)
+        latitude, longitude, estimated_address = self._resolve_live_location(
+            connected,
+            person_state,
+            raw_latitude,
+            raw_longitude,
+        )
         driver = self._friendly_name(person_state)
         source_person = person_state.entity_id if person_state is not None else None
 
@@ -212,6 +325,8 @@ class RememberWhereIParkedCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 KEY_MATCHED_BLUETOOTH_SENSOR: matched_sensor,
             }
             return live_data
+
+        self._last_accepted_live_location = None
 
         if self.data and self.data.get(KEY_DRIVING):
             parked_data = {
@@ -612,6 +727,84 @@ class RememberWhereIParkedCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return (None, None)
 
         return (float(latitude), float(longitude))
+
+    def _resolve_live_location(
+        self,
+        connected: bool,
+        person_state,
+        latitude: float | None,
+        longitude: float | None,
+    ) -> tuple[float | None, float | None, str | None]:
+        """Return the accepted live location, filtering implausible jumps while driving."""
+        if not connected:
+            return (
+                latitude,
+                longitude,
+                self._select_address(latitude, longitude),
+            )
+
+        if latitude is None or longitude is None:
+            return (
+                self._current_value(KEY_LATITUDE),
+                self._current_value(KEY_LONGITUDE),
+                self._current_value(KEY_ADDRESS),
+            )
+
+        candidate_updated_at = getattr(person_state, "last_updated", None)
+        candidate_address = self._select_address(latitude, longitude) or self._coordinate_string(
+            latitude, longitude
+        )
+        plausibility = is_plausible_location(
+            self._last_accepted_live_location,
+            latitude,
+            longitude,
+            candidate_updated_at,
+        )
+
+        if plausibility.accepted:
+            # Always compare future points to the last accepted live location so a spoofed
+            # report never becomes the baseline for subsequent plausibility checks.
+            self._last_accepted_live_location = AcceptedLiveLocation(
+                latitude=latitude,
+                longitude=longitude,
+                updated_at=candidate_updated_at,
+                address=candidate_address,
+            )
+            return (latitude, longitude, candidate_address)
+
+        fallback_location = self._last_accepted_live_location
+        if fallback_location is None:
+            return (latitude, longitude, candidate_address)
+
+        _LOGGER.warning(
+            (
+                "Rejected implausible live location jump for car entry %s: "
+                "previous=(%.6f, %.6f) candidate=(%.6f, %.6f) distance_km=%.2f "
+                "elapsed_seconds=%s implied_speed_kmh=%s"
+            ),
+            self.config_entry.entry_id,
+            fallback_location.latitude,
+            fallback_location.longitude,
+            latitude,
+            longitude,
+            plausibility.distance_km,
+            (
+                f"{plausibility.elapsed_seconds:.1f}"
+                if plausibility.elapsed_seconds is not None
+                else "unavailable"
+            ),
+            (
+                f"{plausibility.implied_speed_kmh:.1f}"
+                if plausibility.implied_speed_kmh is not None
+                else "unavailable"
+            ),
+        )
+        return (
+            fallback_location.latitude,
+            fallback_location.longitude,
+            fallback_location.address
+            or self._coordinate_string(fallback_location.latitude, fallback_location.longitude),
+        )
 
     def _select_address(
         self, latitude: float | None, longitude: float | None
